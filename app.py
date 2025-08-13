@@ -1,19 +1,4 @@
-return html_content
-
-@app.errorhandler(413)
-def too_large(e):
-    return jsonify({"error": "Arquivo muito grande. Tamanho máximo: 50MB."}), 413
-
-@app.errorhandler(500)
-def internal_error(e):
-    return jsonify({"error": "Erro interno do servidor."}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    logger.info(f"Iniciando servidor na porta {port}")
-    logger.info("Conversor PDF → Excel para Pendências Financeiras")
-    logger.info("Regex otimizadas para formato específico")
-    app.run(host="0.0.0.0", port=port, debug=False)#!/usr/bin/env python3
+#!/usr/bin/env python3
 import subprocess
 import sys
 import os
@@ -559,3 +544,20 @@ def index():
     </script>
 </body>
 </html>'''
+    
+    return html_content
+
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({"error": "Arquivo muito grande. Tamanho máximo: 50MB."}), 413
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({"error": "Erro interno do servidor."}), 500
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Iniciando servidor na porta {port}")
+    logger.info("Conversor PDF → Excel para Pendências Financeiras")
+    logger.info("Regex otimizadas para formato específico")
+    app.run(host="0.0.0.0", port=port, debug=False)
