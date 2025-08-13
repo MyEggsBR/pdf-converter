@@ -1,4 +1,19 @@
-#!/usr/bin/env python3
+return html_content
+
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({"error": "Arquivo muito grande. Tamanho máximo: 50MB."}), 413
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({"error": "Erro interno do servidor."}), 500
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Iniciando servidor na porta {port}")
+    logger.info("Conversor PDF → Excel para Pendências Financeiras")
+    logger.info("Regex otimizadas para formato específico")
+    app.run(host="0.0.0.0", port=port, debug=False)#!/usr/bin/env python3
 import subprocess
 import sys
 import os
@@ -48,20 +63,24 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB max
 app.config["UPLOAD_FOLDER"] = tempfile.gettempdir()
 app.config["OUTPUT_FOLDER"] = tempfile.gettempdir()
 
-# Regex melhoradas com tratamento de erros
+# Regex otimizadas para o formato específico do PDF
 try:
-    # Regex para detectar cliente (mais flexível)
-    regex_cliente = re.compile(r"^(\d+)\s+(.+?)\s+\((\d+)\)(\d{4,5}[-\s]?\d{4})\s+(.+)$")
+    # Regex para detectar cliente - formato: "CODIGO NOME (DDD)TELEFONE CIDADE"
+    regex_cliente = re.compile(r"^(\d+)\s+([A-Z\s\.,&-]+?)\s+\((\d{2})\)(\d{4,5}[-\s]?\d{4})\s+([A-Z\s]+)$")
     
-    # Regex para detectar título (mais robusta)
-    regex_titulo = re.compile(
-        r"^(\d+\.\d+)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d+)\s+(\w+)\s+([\w/-]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$"
+    # Regex para títulos com boleto bancário (BANC)
+    regex_titulo_banc = re.compile(
+        r"^(\d+\.\d+)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d+)\s+(BANC)\s+(\d+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$"
     )
     
-    # Regex alternativa para títulos com formato diferente
-    regex_titulo_alt = re.compile(
-        r"^(\d+\.\d+)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})\s+(.+)$"
+    # Regex para títulos cartão (CART) - formato padrão
+    regex_titulo_cart = re.compile(
+        r"^(\d+\.\d+)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d+)\s+(CART)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$"
     )
+    
+    # Regex para detectar linhas de separação ou totais que devem ser ignoradas
+    regex_ignorar = re.compile(r"^(TOTAL|Limite|[-=]+|Docto|Vencidas|Total|Financeiro|LB Palmas|Pendencia|Rota|Somente).*")
+    
 except re.error as e:
     logger.error(f"Erro nas expressões regulares: {e}")
 
@@ -82,6 +101,7 @@ def processar_pdf(pdf_path, output_path):
     cliente_atual = None
     cidade_atual = None
     telefone_atual = None
+    codigo_cliente_atual = None
     
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -99,48 +119,85 @@ def processar_pdf(pdf_path, output_path):
                     
                     for linha_num, linha in enumerate(linhas, 1):
                         linha = linha.strip()
-                        if not linha:
+                        
+                        # Ignorar linhas vazias ou separadores
+                        if not linha or len(linha) < 5:
                             continue
+                            
+                        # Ignorar linhas que sabemos que não contêm dados úteis
+                        if regex_ignorar.match(linha):
+                            continue
+                            
+                        # Debug: mostrar as primeiras linhas de cada página
+                        if linha_num <= 10:
+                            logger.debug(f"Página {page_num}, Linha {linha_num}: {linha}")
                             
                         # Tentar match com regex de cliente
                         try:
                             match_cliente = regex_cliente.match(linha)
                             if match_cliente:
-                                codigo_cliente = match_cliente.group(1).strip()
+                                codigo_cliente_atual = match_cliente.group(1).strip()
                                 cliente_atual = match_cliente.group(2).strip()
                                 ddd = match_cliente.group(3).strip()
                                 numero = match_cliente.group(4).strip()
                                 telefone_atual = f"({ddd}){numero}"
                                 cidade_atual = match_cliente.group(5).strip()
-                                logger.info(f"Cliente encontrado: {cliente_atual}")
+                                logger.info(f"Cliente encontrado: {codigo_cliente_atual} - {cliente_atual}")
                                 continue
                         except Exception as e:
                             logger.debug(f"Erro ao processar cliente na linha {linha_num}: {e}")
 
-                        # Tentar match com regex de título
+                        # Tentar match com títulos BANC (bancário)
                         try:
-                            match_titulo = regex_titulo.match(linha)
-                            if match_titulo and cliente_atual:
-                                documento = match_titulo.group(1)
-                                emissao = match_titulo.group(2)
-                                vencimento = match_titulo.group(3)
-                                ats = match_titulo.group(4)
-                                tipo = match_titulo.group(5)
-                                boleto = match_titulo.group(6)
-                                valor_doc = match_titulo.group(7)
-                                juros = match_titulo.group(8)
-                                multa = match_titulo.group(9)
-                                tarifa = match_titulo.group(10)
-                                valor_total = match_titulo.group(11)
+                            match_banc = regex_titulo_banc.match(linha)
+                            if match_banc and cliente_atual:
+                                documento = match_banc.group(1)
+                                emissao = match_banc.group(2)
+                                vencimento = match_banc.group(3)
+                                ats = match_banc.group(4)
+                                tipo = match_banc.group(5)
+                                boleto = match_banc.group(6)
+                                valor_doc = match_banc.group(7)
+                                juros = match_banc.group(8)
+                                multa = match_banc.group(9)
+                                tarifa = match_banc.group(10)
+                                valor_total = match_banc.group(11)
 
                                 dados.append([
-                                    cliente_atual, telefone_atual, cidade_atual, documento, 
-                                    emissao, vencimento, ats, tipo, boleto, valor_doc, 
-                                    juros, multa, tarifa, valor_total
+                                    codigo_cliente_atual, cliente_atual, telefone_atual, cidade_atual, 
+                                    documento, emissao, vencimento, ats, tipo, boleto, 
+                                    valor_doc, juros, multa, tarifa, valor_total
                                 ])
-                                logger.info(f"Título encontrado: {documento}")
+                                logger.info(f"Título BANC encontrado: {documento} - {cliente_atual}")
+                                continue
                         except Exception as e:
-                            logger.debug(f"Erro ao processar título na linha {linha_num}: {e}")
+                            logger.debug(f"Erro ao processar título BANC na linha {linha_num}: {e}")
+
+                        # Tentar match com títulos CART (cartão)
+                        try:
+                            match_cart = regex_titulo_cart.match(linha)
+                            if match_cart and cliente_atual:
+                                documento = match_cart.group(1)
+                                emissao = match_cart.group(2)
+                                vencimento = match_cart.group(3)
+                                ats = match_cart.group(4)
+                                tipo = match_cart.group(5)
+                                boleto = ""  # CART não tem boleto
+                                valor_doc = match_cart.group(6)
+                                juros = match_cart.group(7)
+                                multa = match_cart.group(8)
+                                tarifa = match_cart.group(9)
+                                valor_total = match_cart.group(10)
+
+                                dados.append([
+                                    codigo_cliente_atual, cliente_atual, telefone_atual, cidade_atual, 
+                                    documento, emissao, vencimento, ats, tipo, boleto, 
+                                    valor_doc, juros, multa, tarifa, valor_total
+                                ])
+                                logger.info(f"Título CART encontrado: {documento} - {cliente_atual}")
+                                continue
+                        except Exception as e:
+                            logger.debug(f"Erro ao processar título CART na linha {linha_num}: {e}")
                             
                 except Exception as e:
                     logger.error(f"Erro ao processar página {page_num}: {e}")
@@ -153,10 +210,10 @@ def processar_pdf(pdf_path, output_path):
     if not dados:
         raise Exception("Nenhum dado foi extraído do PDF. Verifique se o formato está correto.")
 
-    # Criar DataFrame
+    # Criar DataFrame com colunas ajustadas
     colunas = [
-        "Cliente", "Telefone", "Cidade", "Documento", "Emissão", "Vencimento", "ATS",
-        "Tipo", "Boleto", "Valor Documento", "Juros", "Multa", "Tarifa", "Valor Total"
+        "Código Cliente", "Cliente", "Telefone", "Cidade", "Documento", "Emissão", 
+        "Vencimento", "ATS", "Tipo", "Boleto", "Valor Documento", "Juros", "Multa", "Tarifa", "Valor Total"
     ]
     
     try:
@@ -169,9 +226,23 @@ def processar_pdf(pdf_path, output_path):
             if col in df.columns:
                 df[col] = df[col].apply(limpar_valor_numerico)
 
-        # Salvar Excel
+        # Salvar Excel com formatação melhorada
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Pendências")
+            
+            # Ajustar larguras das colunas
+            worksheet = writer.sheets["Pendências"]
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                worksheet.column_dimensions[column_letter].width = adjusted_width
             
         logger.info(f"Excel salvo em: {output_path}")
         return len(dados)
@@ -231,7 +302,7 @@ def index():
                 
                 # Criar resposta com nome mais descritivo
                 original_name = file.filename.replace('.pdf', '')
-                download_name = f"converted_{original_name}_{uuid.uuid4().hex[:8]}.xlsx"
+                download_name = f"pendencias_{original_name}_{uuid.uuid4().hex[:8]}.xlsx"
                 
                 response = Response(
                     file_data,
@@ -260,13 +331,13 @@ def index():
             logger.error(f"Erro geral: {str(e)}")
             return jsonify({"error": f"Erro interno do servidor: {str(e)}"}), 500
 
-    # HTML melhorado com melhor tratamento de erros
+    # HTML com melhorias visuais
     html_content = '''<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>Conversor PDF → Excel</title>
+    <title>Conversor PDF → Excel - Pendências</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -280,6 +351,9 @@ def index():
         .logo-container img { max-width: 200px; height: auto; border-radius: 0.75rem; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3); background: rgba(255, 255, 255, 0.1); padding: 1rem; }
         .hero-title { font-size: 3.5rem; font-weight: 700; line-height: 1.1; margin-bottom: 1.5rem; color: #ffffff; text-shadow: 0 4px 12px rgba(0, 0, 0, 0.3); }
         .hero-subtitle { font-size: 1.5rem; color: #ffffff; margin-bottom: 2rem; line-height: 1.6; font-weight: 500; opacity: 0.9; }
+        .features { margin-top: 2rem; text-align: left; }
+        .feature { display: flex; align-items: center; margin-bottom: 1rem; }
+        .feature-icon { margin-right: 0.5rem; font-size: 1.2rem; }
         .form-section { display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; position: relative; z-index: 10; }
         .form-container { width: 100%; max-width: 28rem; }
         .upload-form { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(20px); border-radius: 1.5rem; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3); padding: 2rem; border: 1px solid rgba(255, 255, 255, 0.2); }
@@ -300,7 +374,10 @@ def index():
         .submit-button:hover { background: linear-gradient(135deg, #012bb8 0%, #06186e 100%); transform: translateY(-1px); box-shadow: 0 10px 25px -5px rgba(1, 58, 226, 0.4); }
         .submit-button:disabled { background: #ccc; cursor: not-allowed; transform: none; }
         .loading { display: none; text-align: center; margin-top: 1rem; color: #013ae2; }
+        .spinner { border: 2px solid #f3f3f3; border-top: 2px solid #013ae2; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 0 auto 0.5rem; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .error-message { display: none; margin-top: 1rem; padding: 0.75rem; background: rgba(220, 38, 38, 0.1); border: 1px solid rgba(220, 38, 38, 0.3); border-radius: 0.5rem; color: #dc2626; font-size: 0.875rem; }
+        .success-message { display: none; margin-top: 1rem; padding: 0.75rem; background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 0.5rem; color: #22c55e; font-size: 0.875rem; }
         .form-disclaimer { font-size: 0.75rem; color: #262626; text-align: center; margin-top: 1rem; line-height: 1.4; opacity: 0.7; }
         @media (max-width: 1024px) { .app-container { grid-template-columns: 1fr; } .hero-section { min-height: 40vh; padding: 2rem 1rem; } .hero-title { font-size: 3rem; } .form-section { padding: 2rem 1rem; } }
         @media (max-width: 768px) { .hero-title { font-size: 2.5rem; } .logo-container img { max-width: 150px; } .upload-form { padding: 1.5rem; } .form-title { font-size: 1.5rem; } }
@@ -313,8 +390,26 @@ def index():
                 <div class="logo-container">
                     <img src="https://www.suportedata.com.br/logo.png" alt="Logo" onerror="this.style.display='none'">
                 </div>
-                <h1 class="hero-title">Conversor PDF → Excel</h1>
-                <p class="hero-subtitle">Transforme dados de PDF em planilhas organizadas</p>
+                <h1 class="hero-title">📊 PDF → Excel</h1>
+                <p class="hero-subtitle">Conversor de Pendências Financeiras</p>
+                <div class="features">
+                    <div class="feature">
+                        <span class="feature-icon">✅</span>
+                        <span>Extrai clientes e títulos automaticamente</span>
+                    </div>
+                    <div class="feature">
+                        <span class="feature-icon">💰</span>
+                        <span>Organiza valores e vencimentos</span>
+                    </div>
+                    <div class="feature">
+                        <span class="feature-icon">📋</span>
+                        <span>Gera planilha Excel formatada</span>
+                    </div>
+                    <div class="feature">
+                        <span class="feature-icon">🚀</span>
+                        <span>Processamento rápido e seguro</span>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="form-section">
@@ -322,7 +417,7 @@ def index():
                 <form class="upload-form" id="uploadForm" action="/" method="POST" enctype="multipart/form-data">
                     <div class="form-header">
                         <h2 class="form-title">Envie seu PDF</h2>
-                        <p class="form-subtitle">Faça upload do arquivo PDF para conversão</p>
+                        <p class="form-subtitle">Relatório de pendências financeiras</p>
                     </div>
                     <div class="input-group">
                         <label class="input-label">Arquivo PDF</label>
@@ -332,18 +427,23 @@ def index():
                                 <polyline points="7,10 12,15 17,10"></polyline>
                                 <line x1="12" x2="12" y1="15" y2="3"></line>
                             </svg>
-                            <div class="upload-text">Clique ou arraste seu arquivo PDF aqui</div>
-                            <div class="upload-subtext">Apenas arquivos PDF são aceitos (máx. 50MB)</div>
+                            <div class="upload-text">Clique ou arraste seu PDF aqui</div>
+                            <div class="upload-subtext">Máximo 50MB • Formato específico de pendências</div>
                             <input accept=".pdf" class="file-input" name="file" type="file" id="fileInput" required/>
                         </div>
                         <div class="file-info" id="fileInfo"></div>
                     </div>
-                    <button class="submit-button" type="submit" id="submitBtn">Converter para Excel</button>
+                    <button class="submit-button" type="submit" id="submitBtn">🔄 Converter para Excel</button>
                     <div class="loading" id="loading">
-                        <div>Processando arquivo...</div>
+                        <div class="spinner"></div>
+                        <div>Processando PDF...</div>
                     </div>
                     <div class="error-message" id="errorMessage"></div>
-                    <p class="form-disclaimer">Seu PDF será processado e convertido automaticamente. Os dados são tratados de forma segura.</p>
+                    <div class="success-message" id="successMessage"></div>
+                    <p class="form-disclaimer">
+                        <strong>Formato suportado:</strong> PDFs de pendências com clientes, documentos, valores e vencimentos.
+                        Todos os dados são processados localmente e não são armazenados.
+                    </p>
                 </form>
             </div>
         </div>
@@ -356,6 +456,7 @@ def index():
         const submitBtn = document.getElementById('submitBtn');
         const loading = document.getElementById('loading');
         const errorMessage = document.getElementById('errorMessage');
+        const successMessage = document.getElementById('successMessage');
         const uploadForm = document.getElementById('uploadForm');
 
         // Drag and drop
@@ -403,7 +504,7 @@ def index():
             
             fileInfo.innerHTML = `📄 ${file.name} (${formatFileSize(file.size)})`;
             fileInfo.style.display = 'block';
-            hideError();
+            hideMessages();
         }
 
         function formatFileSize(bytes) {
@@ -417,10 +518,18 @@ def index():
         function showError(message) {
             errorMessage.textContent = message;
             errorMessage.style.display = 'block';
+            successMessage.style.display = 'none';
         }
 
-        function hideError() {
+        function showSuccess(message) {
+            successMessage.textContent = message;
+            successMessage.style.display = 'block';
             errorMessage.style.display = 'none';
+        }
+
+        function hideMessages() {
+            errorMessage.style.display = 'none';
+            successMessage.style.display = 'none';
         }
 
         uploadForm.addEventListener('submit', (e) => {
@@ -433,30 +542,20 @@ def index():
             submitBtn.disabled = true;
             submitBtn.textContent = 'Processando...';
             loading.style.display = 'block';
-            hideError();
+            hideMessages();
+            
+            // Mostrar mensagem de sucesso após um tempo
+            setTimeout(() => {
+                showSuccess('PDF processado com sucesso! Download iniciará automaticamente.');
+            }, 2000);
         });
 
         // Reset form after response
         window.addEventListener('load', () => {
             submitBtn.disabled = false;
-            submitBtn.textContent = 'Converter para Excel';
+            submitBtn.textContent = '🔄 Converter para Excel';
             loading.style.display = 'none';
         });
     </script>
 </body>
 </html>'''
-    
-    return html_content
-
-@app.errorhandler(413)
-def too_large(e):
-    return jsonify({"error": "Arquivo muito grande. Tamanho máximo: 50MB."}), 413
-
-@app.errorhandler(500)
-def internal_error(e):
-    return jsonify({"error": "Erro interno do servidor."}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    logger.info(f"Iniciando servidor na porta {port}")
-    app.run(host="0.0.0.0", port=port, debug=False)
